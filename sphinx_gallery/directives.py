@@ -8,6 +8,7 @@ from docutils import nodes, statemachine
 from docutils.parsers.rst import Directive, directives
 from docutils.parsers.rst.directives import images
 from sphinx.errors import ExtensionError
+from sphinx.util.logging import getLogger
 
 from .backreferences import (
     THUMBNAIL_PARENT_DIV,
@@ -16,6 +17,8 @@ from .backreferences import (
 )
 from .gen_rst import extract_intro_and_title
 from .py_source_parser import split_code_and_text_blocks
+
+logger = getLogger("sphinx-gallery")
 
 
 class MiniGallery(Directive):
@@ -50,6 +53,52 @@ class MiniGallery(Directive):
         "heading-level": directives.single_char_or_unicode,
     }
 
+    def _get_target_dir(self, config, src_dir, path, obj):
+        """Get thumbnail target directory, errors when ambiguous/not in example dir."""
+        examples_dirs = config.sphinx_gallery_conf["examples_dirs"]
+        if not isinstance(examples_dirs, list):
+            examples_dirs = [examples_dirs]
+        gallery_dirs = config.sphinx_gallery_conf["gallery_dirs"]
+        if not isinstance(gallery_dirs, list):
+            gallery_dirs = [gallery_dirs]
+
+        gal_matches = []
+        for e, g in zip(examples_dirs, gallery_dirs):
+            e = Path(src_dir, e).resolve(strict=True)
+            g = Path(src_dir, g).resolve(strict=True)
+            try:
+                gal_matches.append((path.relative_to(e), g))
+            except ValueError:
+                continue
+
+        # `path` inside one `examples_dirs`
+        if (n_match := len(gal_matches)) == 1:
+            ex_parents, target_dir = (
+                gal_matches[0][0].parents,
+                gal_matches[0][1],
+            )
+        # `path` inside several `examples_dirs`, take the example dir with
+        # longest match (shortest parents after relative)
+        elif n_match > 1:
+            ex_parents, target_dir = min(
+                [(match[0].parents, match[1]) for match in gal_matches],
+                key=lambda x: len(x[0]),
+            )
+        # `path` is not inside a `examples_dirs`
+        else:
+            raise ExtensionError(
+                f"minigallery directive error: path input '{obj}' found file:"
+                f" '{path}' but this does not live inside any examples_dirs: "
+                f"{examples_dirs}"
+            )
+
+        # Add subgallery path, if present
+        subdir = ""
+        if (ex_p := ex_parents[0]) != Path("."):
+            subdir = ex_p
+        target_dir = target_dir / subdir
+        return target_dir
+
     def run(self):
         """Generate mini-gallery from backreference and example files."""
         from .gen_rst import _get_callables
@@ -67,12 +116,16 @@ class MiniGallery(Directive):
         # Retrieve the backreferences directory
         config = self.state.document.settings.env.config
         backreferences_dir = config.sphinx_gallery_conf["backreferences_dir"]
+        if backreferences_dir is None:
+            logger.warning(
+                "'backreferences_dir' config is None, minigallery "
+                "directive will resolve all inputs as file paths or globs."
+            )
 
         # Retrieve source directory
         src_dir = config.sphinx_gallery_conf["src_dir"]
 
         # Parse the argument into the individual objects
-
         obj_list = []
 
         if self.arguments:
@@ -100,10 +153,10 @@ class MiniGallery(Directive):
 
         file_paths = []
         for obj in obj_list:
-            if path := has_backrefs(obj):
-                file_paths.append((obj, path))
+            if backreferences_dir and (path := has_backrefs(obj)):
+                file_paths.append((obj, path.resolve()))
             elif paths := Path(src_dir).glob(obj):
-                file_paths.extend([(obj, p) for p in paths])
+                file_paths.extend([(obj, p.resolve()) for p in paths])
 
         if len(file_paths) == 0:
             return []
@@ -119,7 +172,7 @@ class MiniGallery(Directive):
             )
         for obj, path in sorted(
             set(file_paths),
-            key=((lambda x: sortkey(os.path.abspath(x[-1]))) if sortkey else None),
+            key=((lambda x: sortkey(str(x[-1]))) if sortkey else None),
         ):
             if path.suffix == ".examples":
                 # Insert the backreferences file(s) using the `include` directive.
@@ -131,24 +184,8 @@ class MiniGallery(Directive):
     :end-before: thumbnail-parent-div-close"""
                 )
             else:
-                dirs = [
-                    (e, g)
-                    for e, g in zip(
-                        config.sphinx_gallery_conf["examples_dirs"],
-                        config.sphinx_gallery_conf["gallery_dirs"],
-                    )
-                    if (obj.find(e) != -1)
-                ]
-                if len(dirs) != 1:
-                    raise ExtensionError(
-                        f"Error in gallery lookup: input={obj}, matches={dirs}, "
-                        f"examples={config.sphinx_gallery_conf['examples_dirs']}"
-                    )
-
-                example_dir, target_dir = [Path(src_dir, d) for d in dirs[0]]
-
-                # finds thumbnails in subdirs
-                target_dir = target_dir / path.relative_to(example_dir).parent
+                target_dir = self._get_target_dir(config, src_dir, path, obj)
+                # Get thumbnail
                 _, script_blocks = split_code_and_text_blocks(
                     str(path), return_node=False
                 )

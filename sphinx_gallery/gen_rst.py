@@ -284,8 +284,12 @@ def _sanitize_rst(string):
     # ``whatever thing`` --> whatever thing
     p = r"(\s|^)`"
     string = re.sub(p + r"`([^`]+)`" + e, r"\1\2\3", string)
+    # `~mymodule.MyClass` --> MyClass
+    string = re.sub(p + r"~([^`]+)" + e, _regroup, string)
+
     # `whatever thing` --> whatever thing
-    string = re.sub(p + r"([^`]+)" + e, r"\1\2\3", string)
+    # `.MyClass` --> MyClass
+    string = re.sub(p + r"\.?([^`]+)" + e, r"\1\2\3", string)
 
     # **string** --> string
     string = re.sub(r"\*\*([^\*]*)\*\*", r"\1", string)
@@ -1234,8 +1238,16 @@ def _get_backreferences(gallery_conf, script_vars, script_blocks, node, target_f
     if example_code_obj:
         _write_code_obj(target_file, example_code_obj)
     exclude_regex = gallery_conf["exclude_implicit_doc_regex"]
+
+    def _normalize_name(cobj):
+        full_name = "{module}.{name}".format(**cobj)
+        for pattern in gallery_conf["prefer_full_module"]:
+            if re.search(pattern, full_name):
+                return full_name
+        return "{module_short}.{name}".format(**cobj)
+
     backrefs = {
-        "{module_short}.{name}".format(**cobj)
+        _normalize_name(cobj)
         for cobjs in example_code_obj.values()
         for cobj in cobjs
         if cobj["module"].startswith(gallery_conf["doc_module"])
@@ -1335,7 +1347,7 @@ def generate_file_rst(fname, target_dir, src_dir, gallery_conf):
         script_blocks, script_vars, gallery_conf, file_conf
     )
 
-    logger.debug("%s ran in : %.2g seconds\n", src_file, time_elapsed)
+    logger.debug("%s ran in : %.2g seconds", src_file, time_elapsed)
 
     # Create dummy images
     _make_dummy_images(executable, file_conf, script_vars)

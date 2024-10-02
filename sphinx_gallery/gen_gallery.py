@@ -159,9 +159,11 @@ def _update_gallery_conf_exclude_implicit_doc(gallery_conf):
 
     This is separate function for better testability.
     """
-    # prepare regex for exclusions from implicit documentation
+    # prepare regex for exclusions from implicit documentation, ensuring that what
+    # gets complied has a stable __repr__ (i.e., by sorting the exclude_implicit_doc
+    # set before joining)
     exclude_regex = (
-        re.compile("|".join(gallery_conf["exclude_implicit_doc"]))
+        re.compile("|".join(sorted(gallery_conf["exclude_implicit_doc"])))
         if gallery_conf["exclude_implicit_doc"]
         else False
     )
@@ -567,6 +569,12 @@ def _prepare_sphx_glr_dirs(gallery_conf, srcdir):
     if not isinstance(gallery_dirs, list):
         gallery_dirs = [gallery_dirs]
 
+    if len(examples_dirs) != len(gallery_dirs):
+        logger.warning(
+            "'examples_dirs' and 'gallery_dirs' are of different lengths. "
+            "Surplus entries will be ignored."
+        )
+
     if bool(gallery_conf["backreferences_dir"]):
         backreferences_dir = os.path.join(srcdir, gallery_conf["backreferences_dir"])
         os.makedirs(backreferences_dir, exist_ok=True)
@@ -608,13 +616,15 @@ def _finish_index_rst(
         )
         indexst += subsections_toctree
 
-    if sg_root_index:
-        # Download examples
-        if gallery_conf["download_all_examples"]:
-            download_fhindex = generate_zipfiles(
-                gallery_dir_abs_path, app.builder.srcdir, gallery_conf
-            )
+    # Always generate download zipfiles, only add to index.rst if required
+    if gallery_conf["download_all_examples"]:
+        download_fhindex = generate_zipfiles(
+            gallery_dir_abs_path, app.builder.srcdir, gallery_conf
+        )
+        if sg_root_index:
             indexst += download_fhindex
+
+    if sg_root_index:
         # Signature
         if app.config.sphinx_gallery_conf["show_signature"]:
             indexst += SPHX_GLR_SIG
